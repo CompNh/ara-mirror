@@ -1,0 +1,6 @@
+# 🔒 block direct commits to main
+branch="$(git symbolic-ref --short HEAD 2>/dev/null)"
+[ "$branch" = "main" ] && echo "❌ Direct commits to 'main' are blocked. Create a feature branch." && exit 1
+
+# ✅ 변경(스테이징) 파일만 포맷/린트
+pnpm exec lint-staged --verbose

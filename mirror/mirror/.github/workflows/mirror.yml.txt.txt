@@ -1,0 +1,71 @@
+name: Mirror TXT (on merge to main)
+
+on:
+  pull_request:
+    types: [closed] # PR이 '닫힘'일 때만
+    branches: [main] # 대상(base)이 main인 PR만
+  workflow_dispatch: # 수동 실행도 허용(옵션)
+
+jobs:
+  mirror:
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1) 머지 커밋 기준으로 원본 체크아웃
+      - name: Checkout source (ara@merged)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || 'refs/heads/main' }}
+          fetch-depth: 0
+
+      # 2) Node 설정 + 미러 생성
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generate mirror/
+        run: node tools/mirror/mirror-to-txt.mjs
+
+      # 3) 미러 레포 체크아웃(Deploy Key 사용)
+      - name: Start ssh-agent (add deploy key)
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.MIRROR_DEPLOY_KEY }}
+
+      - name: Prepare mirror repo (init if empty, else clone)
+        run: |
+          set -e
+          # 빈 레포인지 확인 (HEAD 조회 실패시 EMPTY=1)
+          if git ls-remote --symref git@github.com:CompNh/ara-mirror.git HEAD >/dev/null 2>&1; then
+            echo "Mirror repo has refs; cloning..."
+            git clone --depth 1 git@github.com:CompNh/ara-mirror.git mirror-repo
+          else
+            echo "Mirror repo is empty; initializing..."
+            rm -rf mirror-repo
+            mkdir mirror-repo
+            cd mirror-repo
+            git init
+            git remote add origin git@github.com:CompNh/ara-mirror.git
+            git checkout -b main
+            echo "# ara-mirror" > README.md
+            git add .
+            git -c user.name="ara-mirror-bot" -c user.email="ara-mirror-bot@users.noreply.github.com" commit -m "chore: init mirror repo"
+            git push -u origin main
+            cd ..
+          fi
+
+      # 4) mirror/ 동기화 후 커밋/푸시
+      - name: Sync + commit + push
+        run: |
+          rsync -a --delete mirror/ mirror-repo/mirror/
+          cd mirror-repo
+          git config user.name "ara-mirror-bot"
+          git config user.email "ara-mirror-bot@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore(mirror): sync from CompNh/ara @ $GITHUB_SHA"
+            git push origin HEAD:main
+          else
+            echo "No changes to mirror."
+          fi
